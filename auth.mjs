@@ -1,8 +1,9 @@
 // Doubao CLI account flows: status probe and QR login. Credentials stay in the
 // CLI's own store (DPAPI on Windows); the plugin never reads or keeps tokens.
 import fs from "node:fs";
+import path from "node:path";
 import { spawn } from "node:child_process";
-import { captureCli, cliScript, nodeBin, childEnv, ensureRuntime } from "./acp.mjs";
+import { captureCli, ensureRuntime } from "./acp.mjs";
 
 export async function authStatus({ verify = false, signal } = {}) {
   const r = await captureCli(["auth", "status", ...(verify ? ["--verify"] : [])], { timeoutMs: 30000, signal });
@@ -21,11 +22,21 @@ export async function logout({ signal } = {}) {
   return { ok: !after.loggedIn, uid: before.uid, raw: out, code: r.code };
 }
 
-function openImage(file) {
-  const [cmd, args] = process.platform === "win32"
-    ? ["powershell", ["-NoProfile", "-Command", `Start-Process -LiteralPath '${file.replace(/'/g, "''")}'`]]
+function openImage(file, log) {
+  const windows = process.platform === "win32";
+  const [cmd, args] = windows
+    ? [path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      ["-NoProfile", "-NonInteractive", "-Command", "Invoke-Item -LiteralPath $env:DOUBAO_ACP_QR_IMAGE -ErrorAction Stop"]]
     : process.platform === "darwin" ? ["open", [file]] : ["xdg-open", [file]];
-  try { spawn(cmd, args, { stdio: "ignore", windowsHide: true, detached: true }).unref(); } catch {}
+  const env = windows ? { ...process.env, DOUBAO_ACP_QR_IMAGE: file } : process.env;
+  return new Promise((resolve, reject) => {
+    const opener = spawn(cmd, args, { env, stdio: "ignore", windowsHide: true });
+    opener.once("error", reject);
+    opener.once("close", (code) => {
+      if (code === 0) { log("login qr image opened"); resolve(); }
+      else reject(new Error("无法打开豆包登录二维码图片（退出码 " + code + "）。"));
+    });
+  });
 }
 
 // `login --qr=png` prints a temp image path (format not contractually fixed);
@@ -41,37 +52,41 @@ function qrPathOf(text) {
   return cands.find((c) => { try { return fs.existsSync(c); } catch { return false; } }) || "";
 }
 
-// Returns { instructions, finish(signal) }. When the CLI is already logged in
-// it short-circuits (doubao login itself does the same) and finish resolves
-// immediately; otherwise a login child waits for the QR scan.
-export async function startLogin({ signal, log = () => {} } = {}) {
-  await ensureRuntime(log);
-  const st = await authStatus({ signal });
-  if (st.loggedIn) {
-    return { instructions: "豆包 CLI 已登录（用户 " + (st.uid || "本机账号") + "），无需扫码。", finish: async () => st };
-  }
-  const child = spawn(nodeBin(), [cliScript(), "login", "--qr=png"], { env: childEnv(), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-  let out = "", err = "", opened = false;
-  const exitPromise = new Promise((resolve) => {
-    child.on("exit", (code) => resolve(code));
-    child.on("error", (e) => { err += String(e.message || e); resolve(null); });
-  });
-  child.stdout.on("data", (d) => {
-    out += d.toString("utf8");
-    if (!opened) { const p = qrPathOf(out); if (p) { opened = true; openImage(p); log("login qr image opened: " + p); } }
-  });
-  child.stderr.on("data", (d) => { err += d.toString("utf8"); });
-  const kill = () => { try { child.kill(); } catch {} };
-  if (signal?.aborted) kill();
-  else signal?.addEventListener("abort", kill, { once: true });
+// Start the download and QR flow in Magpie's waiting callback, so the sign-in
+// screen is visible while a new machine is downloading the runtime.
+export function startLogin({ log = () => {}, openQr = openImage } = {}) {
   return {
-    instructions: "登录二维码图片将自动打开，请用豆包 App 扫码并在手机上确认。若图片未打开，请在终端运行 doubao login。",
-    finish: async (sig) => {
-      if (sig) { if (sig.aborted) kill(); else sig.addEventListener("abort", kill, { once: true }); }
-      const code = await exitPromise;
-      signal?.removeEventListener("abort", kill);
-      if (code !== 0) throw new Error("豆包登录未完成：" + (err || out).trim().slice(-300));
-      const verified = await authStatus({ verify: true });
+    instructions: "首次登录会下载并安装豆包 CLI 运行时。二维码打开后，请用豆包 App 扫码并在手机上确认。",
+    async finish(signal) {
+      signal?.throwIfAborted();
+      await ensureRuntime(log);
+      signal?.throwIfAborted();
+      const current = await authStatus({ signal });
+      if (current.loggedIn) return current;
+      signal?.throwIfAborted();
+
+      const openSignal = new AbortController();
+      const loginSignal = signal ? AbortSignal.any([signal, openSignal.signal]) : openSignal.signal;
+      let opening;
+      const login = await captureCli(["login", "--qr=png"], {
+        timeoutMs: 600000,
+        signal: loginSignal,
+        onOutput(out, err) {
+          if (opening) return;
+          const file = qrPathOf(out + "\n" + err);
+          if (!file) return;
+          opening = Promise.resolve().then(() => openQr(file, log)).catch((error) => {
+            openSignal.abort(new Error("无法打开豆包登录二维码。请检查系统的 PNG 默认应用后重试。"));
+            log("doubao login QR could not be opened: " + error.message);
+          });
+        },
+      });
+      await opening;
+      loginSignal.throwIfAborted();
+      if (login.timedOut) throw new Error("豆包扫码登录超时，请重试。");
+      if (login.code !== 0) throw new Error("豆包登录未完成：" + (login.err || login.out).trim().split(/[\r\n]+/).at(-1)?.slice(0, 220));
+      const verified = await authStatus({ verify: true, signal });
+      signal?.throwIfAborted();
       if (!verified.loggedIn) throw new Error("登录后验证失败：" + verified.raw.slice(-300));
       return verified;
     },

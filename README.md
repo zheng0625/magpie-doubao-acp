@@ -13,9 +13,7 @@ magpie.com plugin add github:zheng0625/magpie-doubao-acp
 magpie.com plugin add D:\path\to\magpie-doubao-acp
 ```
 
-依赖 `@bytedance/doubao-cli`（公开 npm 包）随插件安装。其 postinstall 按平台下载签名运行时；
-magpie 宿主为 Bun，默认不执行未信任包的 postinstall——插件首次使用时会自检运行时
-（`doubao --version`），缺失时自动补跑 `scripts/install.cjs`。
+依赖 `@bytedance/doubao-cli` 随插件安装。首次扫码登录时，插件会检查 `doubao --version`，并通过依赖包自带的 `scripts/install.cjs` 下载缺失的运行时。等待运行时安装完成后，扫码窗口会自动打开。
 
 运行时要求：Windows 优先（trajectory 富化与内存 watchdog 依赖 Windows 路径/PowerShell）；
 node 可选——无 node 时自动回退用宿主 Bun 运行 CLI 脚本。
@@ -24,7 +22,7 @@ node 可选——无 node 时自动回退用宿主 Bun 运行 CLI 脚本。
 
 magpie 账户设置里提供三个入口：
 
-- **扫码登录豆包 CLI**：自动打开 `doubao login --qr=png` 生成的二维码图片，用豆包 App 扫码确认。
+- **扫码登录豆包 CLI**：新电脑直接选择此项。运行时安装完成后，插件会用系统默认图片应用打开二维码，用豆包 App 扫码确认。
 - **本机已登录，直接启用**：检测 `doubao auth status`，已登录则免密启用。
 - **退出豆包 CLI 登录**：执行 `doubao logout`（会同时停止该账号下运行中的任务）。
 
@@ -85,6 +83,7 @@ Codex 的会话标题生成请求（thread_title 元提示）由插件本地应�
 node test/unit.mjs     # 离线单测（剥离 / cwd / 标题识别 / 指纹）
 node test/trajectory.mjs # 离线单测（trajectory 解析 / 运行中命令查找）
 node test/entries.mjs  # 离线单测（登入登出入口 / 无额度 hook）
+node --test test/first-login.test.mjs # 离线模拟没有 CLI 运行时的首次扫码登录
 node --test test/responses.mjs # 离线检查 Responses 流与续接输入
 node test/auth.mjs     # 登录流只读联调（需已登录的豆包 CLI）
 node test/run.mjs      # 联调（需已登录的豆包 CLI；会产生真实会话）

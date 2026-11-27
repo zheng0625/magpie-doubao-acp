@@ -99,9 +99,9 @@ function createHooks(input = {}) {
           type: "oauth",
           label: "扫码登录豆包 CLI",
           description: "打开豆包登录二维码，用豆包 App 扫码确认。凭据由豆包 CLI 自行保管，插件不接触。",
-          async authorize(_inputs, { signal } = {}) {
+          async authorize() {
             try {
-              const flow = await startLogin({ signal, log });
+              const flow = startLogin({ log });
               return {
                 url: "",
                 instructions: flow.instructions,

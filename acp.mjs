@@ -30,23 +30,46 @@ export function nodeBin() {
   return nodeBinCache;
 }
 
-// Async CLI invocation with captured output (login/auth/install flows).
-export function captureCli(args, { cwd, timeoutMs = 30000, signal } = {}) {
+function captureScript(script, args, { cwd, timeoutMs = 30000, signal, onOutput } = {}) {
+  if (signal?.aborted) return Promise.resolve({ code: null, out: "", err: "" });
   return new Promise((resolve) => {
-    const child = spawn(nodeBin(), [cliScript(), ...args], { cwd, env: childEnv(), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const child = spawn(nodeBin(), [script, ...args], { cwd, env: childEnv(), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     let out = "", err = "", done = false;
-    const finish = (code) => { if (done) return; done = true; clearTimeout(timer); resolve({ code, out, err }); };
-    const timer = setTimeout(() => { try { child.kill(); } catch {} finish(null); }, timeoutMs);
-    child.stdout.on("data", (d) => { out += d.toString("utf8"); if (out.length > 1e6) out = out.slice(-1e6); });
-    child.stderr.on("data", (d) => { err += d.toString("utf8"); if (err.length > 1e6) err = err.slice(-1e6); });
-    child.on("exit", (code) => finish(code));
+    const finish = (code, timedOut = false) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve({ code, out, err, timedOut });
+    };
+    const kill = () => { try { child.kill(); } catch {} };
+    const onAbort = () => { kill(); finish(null); };
+    const timer = setTimeout(() => { kill(); finish(null, true); }, timeoutMs);
+    child.stdout.setEncoding("utf8").on("data", (d) => {
+      out = (out + d).slice(-1e6);
+      if (!done) onOutput?.(out, err);
+    });
+    child.stderr.setEncoding("utf8").on("data", (d) => {
+      err = (err + d).slice(-1e6);
+      if (!done) onOutput?.(out, err);
+    });
+    child.on("close", (code) => finish(code));
     child.on("error", (e) => { err += String(e.message || e); finish(null); });
     if (signal) {
-      const onAbort = () => { try { child.kill(); } catch {} };
       if (signal.aborted) onAbort();
       else signal.addEventListener("abort", onAbort, { once: true });
     }
   });
+}
+
+// Async CLI invocation with captured output (login/auth flows).
+export function captureCli(args, options) {
+  return captureScript(cliScript(), args, options);
+}
+
+function failureDetail({ out, err, timedOut }) {
+  if (timedOut) return "操作超时，请检查网络后重试。";
+  return (err.trim() || out.trim()).split(/[\r\n]+/).at(-1)?.slice(0, 220) || "豆包 CLI 未返回错误详情。";
 }
 
 // Bun does not run untrusted packages' postinstall, so the platform binary
@@ -56,27 +79,24 @@ let runtimeRepair = null;
 let runtimeOk = false;
 export async function ensureRuntime(log = () => {}) {
   if (runtimeOk) return;
-  const probe = await captureCli(["--version"], { timeoutMs: 20000 });
-  if (probe.code === 0) { runtimeOk = true; return; }
   if (!runtimeRepair) {
     runtimeRepair = (async () => {
-      const install = path.join(path.dirname(path.dirname(cliScript())), "scripts", "install.cjs");
-      if (!fs.existsSync(install)) throw new Error("doubao-cli 运行时缺失且找不到安装脚本：" + install);
-      log("doubao runtime missing, running install.cjs");
-      const inst = await new Promise((resolve) => {
-        const child = spawn(nodeBin(), [install], { env: childEnv(), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-        let out = "", err = "", done = false;
-        const finish = (code) => { if (done) return; done = true; clearTimeout(t); resolve({ code, out, err }); };
-        const t = setTimeout(() => { try { child.kill(); } catch {} finish(null); }, 600000);
-        child.stdout.on("data", (d) => { out += d; });
-        child.stderr.on("data", (d) => { err += d; });
-        child.on("exit", finish); child.on("error", (e) => { err += String(e.message || e); finish(null); });
-      });
-      if (inst.code !== 0) throw new Error("doubao-cli 运行时安装失败：" + (inst.err || inst.out).slice(-400));
-      const re = await captureCli(["--version"], { timeoutMs: 20000 });
-      if (re.code !== 0) throw new Error("doubao-cli 运行时安装后仍不可用：" + (re.err || re.out).slice(-400));
+      const script = cliScript();
+      if (!fs.existsSync(script)) {
+        throw new Error("找不到插件依赖 @bytedance/doubao-cli。请重新安装插件，或运行 npm install -g @bytedance/doubao-cli 后重试。");
+      }
+      let probe = await captureScript(script, ["--version"], { timeoutMs: 20000 });
+      if (probe.code !== 0) {
+        const install = path.join(path.dirname(script), "install.cjs");
+        if (!fs.existsSync(install)) throw new Error("找不到豆包 CLI 运行时安装脚本。" + failureDetail(probe));
+        log("doubao runtime missing, running install.cjs");
+        const result = await captureScript(install, [], { timeoutMs: 600000 });
+        if (result.code !== 0) throw new Error("豆包 CLI 运行时安装失败：" + failureDetail(result));
+        probe = await captureScript(script, ["--version"], { timeoutMs: 20000 });
+        if (probe.code !== 0) throw new Error("豆包 CLI 运行时安装后仍不可用：" + failureDetail(probe));
+        log("doubao runtime installed");
+      }
       runtimeOk = true;
-      log("doubao runtime installed");
     })().finally(() => { runtimeRepair = null; });
   }
   await runtimeRepair;
@@ -151,7 +171,7 @@ export class AcpClient {
     return this.ready;
   }
   async _initialize() {
-    const init = await this.request("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: "magpie-doubao-acp", title: "Doubao ACP magpie plugin", version: "0.1.0" } });
+    const init = await this.request("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: "magpie-doubao-acp", title: "Doubao ACP magpie plugin", version: "0.1.1" } });
     this.notify("notifications/initialized", {});
     this.log("acp initialized " + JSON.stringify(init.agentInfo || {}));
     return init;
