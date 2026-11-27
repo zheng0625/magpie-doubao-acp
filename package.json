@@ -1,0 +1,42 @@
+{
+  "name": "magpie-doubao-acp",
+  "version": "0.1.0",
+  "description": "豆包 CLI ACP agent 提供商：把 doubao acp serve 的自主工具执行能力接入 magpie，无需外置反代服务。",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./server": "./index.mjs"
+  },
+  "files": [
+    "*.mjs",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@bytedance/doubao-cli": "^2.38.2"
+  },
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "opencode",
+    "opencode-plugin",
+    "doubao",
+    "acp",
+    "agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zheng0625/magpie-doubao-acp.git"
+  },
+  "license": "MIT",
+  "magpie": {
+    "name": "豆包 CLI · ACP",
+    "summary": {
+      "zh": "豆包 CLI agent 自主执行工具（读写文件、运行命令），会话续接与工具链实时呈现。无需外置反代服务。",
+      "en": "Doubao CLI ACP agent provider: autonomous tool execution, session resume and live tool feed, no external proxy needed."
+    }
+  }
+}
