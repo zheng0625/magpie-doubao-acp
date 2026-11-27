@@ -171,7 +171,7 @@ export class AcpClient {
     return this.ready;
   }
   async _initialize() {
-    const init = await this.request("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: "magpie-doubao-acp", title: "Doubao ACP magpie plugin", version: "0.1.1" } });
+    const init = await this.request("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: "magpie-doubao-acp", title: "Doubao ACP magpie plugin", version: "0.1.2" } });
     this.notify("notifications/initialized", {});
     this.log("acp initialized " + JSON.stringify(init.agentInfo || {}));
     return init;

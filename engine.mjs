@@ -83,7 +83,7 @@ function withCwd(messages, text) {
 // Codex sends thread-title meta requests ("Generate a concise UI title …") as
 // ordinary chat requests. Forwarding them makes doubao execute the meta prompt
 // as a task and pollutes the account-side conversation list. Detect the strong
-// signature (>=2 markers, single user turn) and answer locally instead.
+// signature (>=2 markers, one substantive user turn) and answer locally.
 const TITLE_MARKERS = [
   "Generate a concise UI title",
   "Fill the structured title field",
@@ -91,13 +91,14 @@ const TITLE_MARKERS = [
   "Generate a clear, informative task title",
 ];
 function titleSubjectOf(messages) {
-  const turns = messages.filter((m) => m.role === "user" || m.role === "assistant");
+  const turns = messages.filter((m) => m.role === "assistant" || (m.role === "user" && safeText(m.content)));
   if (turns.length !== 1 || turns[0].role !== "user") return null;
-  const raw = rawText(turns[0].content);
-  if (TITLE_MARKERS.filter((s) => raw.includes(s)).length < 2) return null;
-  const i = raw.lastIndexOf("User prompt:");
-  const subject = (i >= 0 ? raw.slice(i + "User prompt:".length) : raw).trim();
-  return subject || null;
+  const text = safeText(turns[0].content);
+  const boundary = "User prompt:";
+  const i = text.indexOf(boundary);
+  const instructions = i >= 0 ? text.slice(0, i) : text;
+  if (TITLE_MARKERS.filter((s) => instructions.includes(s)).length < 2) return null;
+  return (i >= 0 ? text.slice(i + boundary.length).trim() : text) || "新会话";
 }
 function localTitle(subject) {
   const line = subject.split("\n").map((l) => l.trim()).find(Boolean) || subject;
@@ -106,14 +107,23 @@ function localTitle(subject) {
 }
 function localTitleResponse(subject, body, modelId) {
   const title = localTitle(subject);
+  const format = body.response_format;
+  const properties = (format?.schema ?? format?.json_schema?.schema)?.properties;
+  const fields = Object.entries(properties ?? {});
+  let content = title;
+  if (format?.type === "json_object") {
+    content = JSON.stringify({ title });
+  } else if (format?.type === "json_schema" && fields.length === 1 && fields[0][1]?.type === "string") {
+    content = JSON.stringify({ [fields[0][0]]: title });
+  }
   const created = Math.floor(Date.now() / 1000);
   const id = "chatcmpl-" + crypto.randomBytes(12).toString("hex");
-  const usage = { prompt_tokens: estimateTokens(subject), completion_tokens: estimateTokens(title), total_tokens: estimateTokens(subject) + estimateTokens(title) };
+  const usage = { prompt_tokens: estimateTokens(subject), completion_tokens: estimateTokens(content), total_tokens: estimateTokens(subject) + estimateTokens(content) };
   if (body.stream !== true) {
-    return new Response(JSON.stringify({ id, object: "chat.completion", created, model: modelId, choices: [{ index: 0, message: { role: "assistant", content: title }, finish_reason: "stop" }], usage }), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
+    return new Response(JSON.stringify({ id, object: "chat.completion", created, model: modelId, choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }], usage }), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
   }
   const sse = (delta, finish) => "data: " + JSON.stringify({ id, object: "chat.completion.chunk", created, model: modelId, choices: [{ index: 0, delta, finish_reason: finish || null }] }) + "\n\n";
-  let out = sse({ role: "assistant", content: "" }) + sse({ content: title }) + sse({}, "stop");
+  let out = sse({ role: "assistant", content: "" }) + sse({ content }) + sse({}, "stop");
   if (body.stream_options && body.stream_options.include_usage) out += "data: " + JSON.stringify({ id, object: "chat.completion.chunk", created, model: modelId, choices: [], usage }) + "\n\n";
   out += "data: [DONE]\n\n";
   return new Response(out, { status: 200, headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store" } });
@@ -484,17 +494,17 @@ export function createEngine({ root, option, log }) {
       try { fs.mkdirSync(captureDir, { recursive: true }); fs.writeFileSync(path.join(captureDir, Date.now() + "-" + crypto.randomBytes(4).toString("hex") + ".json"), JSON.stringify(body)); } catch {}
     }
     const stream = body.stream === true;
-    const models = await fetchModels().catch(() => []);
-    const model = resolveModel(body.model, models);
-    const modelId = model ? model.id : (models.find((m) => m.is_default) || models[0] || {}).id || "doubao-default";
-
     if (env.DOUBAO_ACP_LOCAL_TITLE !== "0") {
       const subject = titleSubjectOf(body.messages);
       if (subject != null) {
+        const modelId = typeof body.model === "string" && body.model ? body.model : "doubao-default";
         logger(JSON.stringify({ ev: "local-title", model: modelId, chars: subject.length }));
         return localTitleResponse(subject, body, modelId);
       }
     }
+    const models = await fetchModels().catch(() => []);
+    const model = resolveModel(body.model, models);
+    const modelId = model ? model.id : (models.find((m) => m.is_default) || models[0] || {}).id || "doubao-default";
 
     // Codex can add developer instructions to each Responses turn. Ignore them
     // in session keys when the prompt builder also drops them. Keep the cwd.

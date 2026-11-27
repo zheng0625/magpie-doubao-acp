@@ -38,7 +38,7 @@ CLI 侧退出用上面的入口或终端 `doubao logout`。两者相互独立。
 | 正文附工作流回顾 | 关 | 开启后在最终回复末尾附加工具链列表 |
 | 转发调用方系统提示 | 关 | 默认剥离 Qoder/Codex 的 system/developer 消息与用户消息内嵌样板（system-reminder、AGENTS.md/INSTRUCTIONS、environment_context），仅保留项目目录一行 |
 
-Codex 的会话标题生成请求（thread_title 元提示）由插件本地应答，不转发豆包、不产生账号侧会话。
+插件在本地处理 Codex 的会话标题请求（`thread_title`），支持单独附带的工作区上下文和结构化标题格式。只有正常工作请求才进入豆包会话。
 
 ## 环境变量
 

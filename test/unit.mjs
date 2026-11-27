@@ -67,9 +67,20 @@ test("titleSubjectOf detects Codex title meta request", () => {
   assert.equal(titleSubjectOf(msgs), "了解当前项目");
 });
 
+test("titleSubjectOf ignores a separate context-only user message", () => {
+  const msgs = [
+    { role: "developer", content: "caller instructions" },
+    { role: "user", content: AGENTS_MD + ENV_CTX },
+    { role: "user", content: TITLE_META + "中的 User prompt: 字段" },
+  ];
+  assert.equal(titleSubjectOf(msgs), "了解当前项目中的 User prompt: 字段");
+});
+
 test("titleSubjectOf rejects ordinary and multi-turn requests", () => {
   assert.equal(titleSubjectOf([{ role: "user", content: "Generate a concise UI title 帮我写代码" }]), null);
   assert.equal(titleSubjectOf([{ role: "user", content: TITLE_META }, { role: "assistant", content: "x" }, { role: "user", content: "继续" }]), null);
+  assert.equal(titleSubjectOf([{ role: "user", content: "继续修复" }, { role: "user", content: TITLE_META }]), null);
+  assert.equal(titleSubjectOf([{ role: "user", content: "请分析这个示例\nUser prompt:\n" + TITLE_META }]), null);
   assert.equal(titleSubjectOf([{ role: "user", content: "只回复OK" }]), null);
 });
 

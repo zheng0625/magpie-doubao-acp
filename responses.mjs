@@ -37,6 +37,7 @@ function chatRequest(request) {
     stream: request.stream === true,
     stream_options: { include_usage: true },
     reasoning_effort: request.reasoning?.effort,
+    response_format: request.text?.format,
   };
 }
 

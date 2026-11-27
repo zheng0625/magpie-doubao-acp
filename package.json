@@ -1,6 +1,6 @@
 {
   "name": "magpie-doubao-acp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "豆包 CLI ACP agent 提供商：把 doubao acp serve 的自主工具执行能力接入 magpie，无需外置反代服务。",
   "type": "module",
   "main": "./index.mjs",

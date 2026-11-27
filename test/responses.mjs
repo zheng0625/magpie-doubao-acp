@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { _internal } from "../index.mjs";
 import { responsesCompletion } from "../responses.mjs";
 
 test("streams tool progress as commentary before the final answer", { timeout: 3000 }, async () => {
@@ -73,4 +77,60 @@ test("streams tool progress as commentary before the final answer", { timeout: 3
   assert.equal(completed.output[1].content[0].text, "工具已完成");
   assert.equal(completed.output[3].content[0].text, "最终答复");
   assert.equal(completed.usage.total_tokens, 17);
+});
+
+test("Codex title requests with a context envelope return locally on both APIs", async () => {
+  const root = mkdtempSync(join(tmpdir(), "doubao-title-test-"));
+  const script = join(root, "fixture.cjs");
+  const called = join(root, "cli-called");
+  const priorCli = process.env.DOUBAO_CLI;
+  const priorCwd = process.env.DOUBAO_ACP_CWD;
+  const priorTitle = process.env.DOUBAO_ACP_LOCAL_TITLE;
+  process.env.DOUBAO_CLI = script;
+  process.env.DOUBAO_ACP_CWD = join(root, "workspace");
+  delete process.env.DOUBAO_ACP_LOCAL_TITLE;
+  try {
+    writeFileSync(script, `require("node:fs").writeFileSync(${JSON.stringify(called)}, "unexpected CLI call");`);
+    const hooks = _internal.createHooks({ directory: root });
+    const loader = await hooks.auth.loader();
+    const messages = [
+      { role: "developer", content: "caller instructions" },
+      { role: "user", content: "<environment_context><cwd>example</cwd></environment_context>" },
+      { role: "user", content: "Generate a concise UI title.\nFill the structured title field with plain text.\n\nUser prompt:\n读取当前文件夹。" },
+    ];
+    const schema = {
+      type: "object", properties: { title: { type: "string" } }, required: ["title"], additionalProperties: false,
+    };
+    const request = (route, body) => loader.fetch(loader.baseURL + route, {
+      method: "POST", body: JSON.stringify({ model: "title-fixture", ...body }),
+    });
+
+    const streaming = await request("/responses", {
+      stream: true,
+      input: messages.map(({ role, content }) => ({ role, content: [{ type: "input_text", text: content }] })),
+      text: { format: { type: "json_schema", name: "thread_title", schema, strict: true } },
+    });
+    assert.equal(streaming.status, 200);
+    const events = (await streaming.text()).split("\n").filter((line) => line.startsWith("data: ")).map((line) => JSON.parse(line.slice(6)));
+    const completed = events.find((event) => event.type === "response.completed");
+    assert.equal(completed.response.output[0].phase, "final_answer");
+    assert.deepEqual(JSON.parse(completed.response.output[0].content[0].text), { title: "读取当前文件夹" });
+
+    const chat = await request("/chat/completions", {
+      messages, response_format: { type: "json_schema", json_schema: { name: "thread_title", schema, strict: true } },
+    });
+    assert.equal(chat.status, 200);
+    assert.deepEqual(JSON.parse((await chat.json()).choices[0].message.content), { title: "读取当前文件夹" });
+
+    const plain = await request("/chat/completions", { messages });
+    assert.equal((await plain.json()).choices[0].message.content, "读取当前文件夹");
+    assert.equal(existsSync(called), false);
+    assert.equal(existsSync(join(root, "doubao-acp", "acp-sessions.json")), false);
+  } finally {
+    for (const [key, value] of Object.entries({ DOUBAO_CLI: priorCli, DOUBAO_ACP_CWD: priorCwd, DOUBAO_ACP_LOCAL_TITLE: priorTitle })) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
 });
